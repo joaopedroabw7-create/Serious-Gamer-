@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>بلياردو الجيب</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <main id="game-container" class="game-container">
+        <!-- شاشة البداية -->
+        <section id="start-screen" class="screen start-screen">
+            <div class="screen-content">
+                <h1 class="game-title">بلياردو الجيب</h1>
+                <p class="game-subtitle">عبدالله ونوس ضد طارق يونس</p>
+                <button id="start-btn" class="btn btn-primary btn-large" type="button">ابدأ اللعب</button>
+                <div class="game-rules">
+                    <span class="rule-icon">🎱</span>
+                    <span>أدخل الكرات الملونة في الجيوب</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- شاشة اللعب -->
+        <section id="play-screen" class="screen play-screen hidden" aria-label="شاشة اللعب">
+            <div class="game-header">
+                <div class="player-info">
+                    <span class="player-name">عبدالله ونوس</span>
+                    <span id="player-score" class="score-value">0</span>
+                </div>
+                <div class="timer-box">
+                    <span class="timer-label">⏱</span>
+                    <span id="timer-display" class="timer-value">00:00</span>
+                </div>
+                <div class="player-info opponent">
+                    <span class="player-name">طارق يونس</span>
+                    <span id="opponent-score" class="score-value">0</span>
+                </div>
+            </div>
+
+            <div id="table-wrapper" class="table-wrapper">
+                <canvas id="game-canvas" class="game-canvas" aria-label="طاولة البلياردو"></canvas>
+                
+                <!-- مؤشر القوة -->
+                <div id="power-indicator" class="power-indicator" aria-hidden="true">
+                    <div id="power-fill" class="power-fill"></div>
+                </div>
+
+                <!-- رسالة فوز -->
+                <div id="win-message" class="win-message hidden" role="alert">
+                    <p id="win-text">🎉 أحسنت!</p>
+                    <button id="play-again-btn" class="btn btn-secondary btn-small" type="button">العب مجددًا</button>
+                </div>
+            </div>
+
+            <div class="game-footer">
+                <p class="hint">اسحب من الكرة البيضاء نحو الهدف</p>
+                <div class="ball-legend" aria-label="الكرات المتبقية">
+                    <span class="legend-dot legend-red"></span>
+                    <span class="legend-dot legend-yellow"></span>
+                    <span class="legend-dot legend-blue"></span>
+                    <span class="legend-dot legend-purple"></span>
+                    <span class="legend-dot legend-orange"></span>
+                    <span class="legend-dot legend-green"></span>
+                    <span class="legend-dot legend-black"></span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // عناصر الواجهة
+            const startBtn = document.getElementById('start-btn');
+            const playAgainBtn = document.getElementById('play-again-btn');
+            const startScreen = document.getElementById('start-screen');
+            const playScreen = document.getElementById('play-screen');
+            const canvas = document.getElementById('game-canvas');
+            const playerScoreEl = document.getElementById('player-score');
+            const opponentScoreEl = document.getElementById('opponent-score');
+            const timerDisplay = document.getElementById('timer-display');
+            const winMessage = document.getElementById('win-message');
+            const winText = document.getElementById('win-text');
+            const powerFill = document.getElementById('power-fill');
+            const powerIndicator = document.getElementById('power-indicator');
+
+            // إعدادات اللعبة
+            const COLORS = ['#e74c3c', '#f1c40f', '#3498db', '#9b59b6', '#e67e22', '#2ecc71'];
+            const BLACK_COLOR = '#1a1a1a';
+            const BALL_RADIUS = 11;
+            const POCKET_RADIUS = 20;
+            const FRICTION = 0.982;
+            const MIN_SPEED = 0.25;
+            const CUSHION = 15;
+            
+            let TABLE_WIDTH, TABLE_HEIGHT;
+            let balls = [];
+            let pockets = [];
+            let cueBall = null;
+            let blackBall = null;
+            let aiming = false;
+            let aimStart = null;
+            let aimEnd = null;
+            let power = 0;
+            let animationId = null;
+            let gameActive = false;
+            let playerScore = 0;
+            let opponentScore = 0;
+            let turn = 'player';
+            let timerSeconds = 0;
+            let timerInterval = null;
+            let cueStick = { angle: 0, distance: 0, visible: false };
+
+            function initDimensions() {
+                TABLE_WIDTH = Math.min(window.innerWidth * 0.94, 430);
+                TABLE_HEIGHT = TABLE_WIDTH * 1.7;
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = TABLE_WIDTH * dpr;
+                canvas.height = TABLE_HEIGHT * dpr;
+                canvas.style.width = TABLE_WIDTH + 'px';
+                canvas.style.height = TABLE_HEIGHT + 'px';
+                canvas.getContext('2d').scale(dpr, dpr);
+            }
+
+            function createPockets() {
+                pockets = [];
+                const w = TABLE_WIDTH;
+                const h = TABLE_HEIGHT;
+                const offset = CUSHION + 4;
+                pockets.push({ x: offset, y: offset, r: POCKET_RADIUS });
+                pockets.push({ x: w / 2, y: offset - 6, r: POCKET_RADIUS });
+                pockets.push({ x: w - offset, y: offset, r: POCKET_RADIUS });
+                pockets.push({ x: offset, y: h - offset, r: POCKET_RADIUS });
+                pockets.push({ x: w / 2, y: h - offset + 6, r: POCKET_RADIUS });
+                pockets.push({ x: w - offset, y: h - offset, r: POCKET_RADIUS });
+            }
+
+            function createBalls() {
+                balls = [];
+                const startX = TABLE_WIDTH * 0.30;
+                const startY = TABLE_HEIGHT * 0.46;
+                const spacing = BALL_RADIUS * 2.15;
+                let colorIndex = 0;
+                
+                // مثلث الكرات (5 صفوف)
+                for (let row = 0; row < 5; row++) {
+                    for (let col = 0; col <= row; col++) {
+                        const x = startX + row * spacing * 0.82;
+                        const y = startY + (col - row / 2) * spacing;
+                        if (row === 2 && col === 1) {
+                            // الكرة السوداء في المركز
+                            blackBall = {
+                                x, y, vx: 0, vy: 0,
+                                color: BLACK_COLOR,
+                                radius: BALL_RADIUS,
+                                active: true,
+                                isBlack: true
+                            };
+                            balls.push(blackBall);
+                        } else if (colorIndex < COLORS.length) {
+                            balls.push({
+                                x, y, vx: 0, vy: 0,
+                                color: COLORS[colorIndex],
+                                radius: BALL_RADIUS,
+                                active: true,
+                                isBlack: false
+                            });
+                            colorIndex++;
+                        }
+                    }
+                }
+                
+                // الكرة البيضاء
+                cueBall = {
+                    x: TABLE_WIDTH * 0.72,
+                    y: TABLE_HEIGHT * 0.5,
+                    vx: 0, vy: 0,
+                    color: '#ffffff',
+                    radius: BALL_RADIUS,
+                    active: true,
+                    isBlack: false
+                };
+                balls.push(cueBall);
+            }
+
+            function resetGame() {
+                playerScore = 0;
+                opponentScore = 0;
+                playerScoreEl.textContent = '0';
+                opponentScoreEl.textContent = '0';
+                winMessage.classList.add('hidden');
+                timerSeconds = 0;
+                updateTimerDisplay();
+                clearInterval(timerInterval);
+                timerInterval = setInterval(() => {
+                    if (gameActive) {
+                        timerSeconds++;
+                        updateTimerDisplay();
+                    }
+                }, 1000);
+                
+                createBalls();
+                createPockets();
+                gameActive = true;
+                turn = 'player';
+                aiming = false;
+                power = 0;
+                powerFill.style.width = '0%';
+                powerIndicator.classList.remove('visible');
+                cueStick.visible = false;
+                drawTable();
+            }
+
+            function updateTimerDisplay() {
+                const mins = Math.floor(timerSeconds / 60).toString().padStart(2, '0');
+                const secs = (timerSeconds % 60).toString().padStart(2, '0');
+                timerDisplay.textContent = `${mins}:${secs}`;
+            }
+
+            function drawTable() {
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, TABLE_WIDTH, TABLE_HEIGHT);
+                
+                // خشب الطاولة
+                ctx.fillStyle = '#4a2f1a';
+                ctx.fillRect(0, 0, TABLE_WIDTH, TABLE_HEIGHT);
+                
+                // إطار داخلي
+                ctx.fillStyle = '#1e6f3f';
+                ctx.fillRect(CUSHION, CUSHION, TABLE_WIDTH - CUSHION * 2, TABLE_HEIGHT - CUSHION * 2);
+                
+                // خط المنتصف
+                ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([8, 8]);
+                ctx.beginPath();
+                ctx.moveTo(CUSHION, TABLE_HEIGHT / 2);
+                ctx.lineTo(TABLE_WIDTH - CUSHION, TABLE_HEIGHT / 2);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // جيوب
+                pockets.forEach(p => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                    ctx.fillStyle = '#111';
+                    ctx.fill();
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                });
+
+                // كرات
+                balls.forEach(ball => {
+                    if (!ball.active) return;
+                    ctx.beginPath();
+                    ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = ball.color;
+                    ctx.fill();
+                    if (ball === cueBall) {
+                        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+                        ctx.lineWidth = 1.5;
+                        ctx.stroke();
+                    }
+                    if (ball.isBlack) {
+                        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+                        ctx.lineWidth = 1.2;
+                        ctx.stroke();
+                    }
+                });
+
+                // عصا التصويب
+                if (cueStick.visible && cueBall.active && aiming) {
+                    drawCueStick(ctx);
+                }
+            }
+
+            function drawCueStick(ctx) {
+                if (!aimStart || !aimEnd) return;
+                const dx = aimEnd.x - aimStart.x;
+                const dy = aimEnd.y - aimStart.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 5) return;
+                
+                const angle = Math.atan2(dy, dx);
+                const stickLength = 120;
+                const startX = cueBall.x - Math.cos(angle) * (BALL_RADIUS + 15);
+                const startY = cueBall.y - Math.sin(angle) * (BALL_RADIUS + 15);
+                const endX = startX - Math.cos(angle) * stickLength;
+                const endY = startY - Math.sin(angle) * stickLength;
+                
+                // جسم العصا
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(endX, endY);
+                ctx.strokeStyle = '#8B4513';
+                ctx.lineWidth = 7;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+                
+                // طرف العصا
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(startX - Math.cos(angle) * 10, startY - Math.sin(angle) * 10);
+                ctx.strokeStyle = '#f5f5dc';
+                ctx.lineWidth = 4;
+                ctx.stroke();
+            }
+
+            function opponentPlay() {
+                if (!gameActive || turn !== 'opponent') return;
+                
+                // الخصم القوي: يصوب نحو أقرب كرة ملونة
+                let targetBall = null;
+                let minDist = Infinity;
+                balls.forEach(ball => {
+                    if (!ball.active || ball === cueBall || ball.isBlack) return;
+                    const dx = ball.x - cueBall.x;
+                    const dy = ball.y - cueBall.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        targetBall = ball;
+                    }
+                });
+                
+                if (targetBall) {
+                    const angle = Math.atan2(targetBall.y - cueBall.y, targetBall.x - cueBall.x);
+                    const force = 12 + Math.random() * 5;
+                    cueBall.vx = Math.cos(angle) * force;
+                    cueBall.vy = Math.sin(angle) * force;
+                    setTimeout(() => {
+                        if (!animationId) {
+                            animationId = requestAnimationFrame(updatePhysics);
+                        }
+                    }, 500);
+                } else {
+                    turn = 'player';
+                }
+            }
+
+            function checkWinCondition() {
+                const remainingBalls = balls.filter(b => b.active && !b.isBlack && b !== cueBall);
+                if (remainingBalls.length === 0 && gameActive) {
+                    gameActive = false;
+                    if (playerScore > opponentScore) {
+                        winText.textContent = '🎉 فاز عبدالله ونوس!';
+                    } else if (opponentScore > playerScore) {
+                        winText.textContent = '😤 فاز طارق يونس!';
+                    } else {
+                        winText.textContent = '🤝 تعادل!';
+                    }
+                    winMessage.classList.remove('hidden');
+                }
+            }
+
+            function updatePhysics() {
+                if (!gameActive) return;
+                
+                let moving = false;
+                
+                balls.forEach(ball => {
+                    if (!ball.active) return;
+                    ball.x += ball.vx;
+                    ball.y += ball.vy;
+                    
+                    ball.vx *= FRICTION;
+                    ball.vy *= FRICTION;
+                    
+                    if (Math.abs(ball.vx) < MIN_SPEED) ball.vx = 0;
+                    if (Math.abs(ball.vy) < MIN_SPEED) ball.vy = 0;
+                    
+                    if (ball.vx !== 0 || ball.vy !== 0) moving = true;
+                    
+                    if (ball.x - ball.radius < CUSHION) {
+                        ball.x = CUSHION + ball.radius;
+                        ball.vx = Math.abs(ball.vx) * 0.9;
+                    } else if (ball.x + ball.radius > TABLE_WIDTH - CUSHION) {
+                        ball.x = TABLE_WIDTH - CUSHION - ball.radius;
+                        ball.vx = -Math.abs(ball.vx) * 0.9;
+                    }
+                    if (ball.y - ball.radius < CUSHION) {
+                        ball.y = CUSHION + ball.radius;
+                        ball.vy = Math.abs(ball.vy) * 0.9;
+                    } else if (ball.y + ball.radius > TABLE_HEIGHT - CUSHION) {
+                        ball.y = TABLE_HEIGHT - CUSHION - ball.radius;
+                        ball.vy = -Math.abs(ball.vy) * 0.9;
+                    }
+                    
+                    pockets.forEach(pocket => {
+                        const dx = ball.x - pocket.x;
+                        const dy = ball.y - pocket.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < pocket.r - 5 && ball.active) {
+                            ball.active = false;
+                            ball.vx = 0;
+                            ball.vy = 0;
+                            if (ball === cueBall) {
+                                // الكرة البيضاء سقطت
+                                cueBall.x = TABLE_WIDTH * 0.72;
+                                cueBall.y = TABLE_HEIGHT * 0.5;
+                                cueBall.vx = 0;
+                                cueBall.vy = 0;
+                                cueBall.active = true;
+                                turn = 'opponent';
+                                opponentScore += 5;
+                                opponentScoreEl.textContent = opponentScore;
+                            } else if (ball.isBlack) {
+                                // الكرة السوداء
+                                if (turn === 'player') {
+                                    playerScore += 30;
+                                    playerScoreEl.textContent = playerScore;
+                                } else {
+                                    opponentScore += 30;
+                                    opponentScoreEl.textContent = opponentScore;
+                                }
+                            } else {
+                                if (turn === 'player') {
+                                    playerScore += 10;
+                                    playerScoreEl.textContent = playerScore;
+                                } else {
+                                    opponentScore += 10;
+                                    opponentScoreEl.textContent = opponentScore;
+                                }
+                            }
+                        }
+                    });
+                });
+                
+                // تصادم بين الكرات
+                for (let i = 0; i < balls.length; i++) {
+                    for (let j = i + 1; j < balls.length; j++) {
+                        const a = balls[i];
+                        const b = balls[j];
+                        if (!a.active || !b.active) continue;
+                        const dx = b.x - a.x;
+                        const dy = b.y - a.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const minDist = a.radius + b.radius;
+                        if (dist < minDist && dist > 0) {
+                            const angle = Math.atan2(dy, dx);
+                            const overlap = minDist - dist;
+                            const cos = Math.cos(angle);
+                            const sin = Math.sin(angle);
+                            a.x -= cos * overlap * 0.5;
+                            a.y -= sin * overlap * 0.5;
+                            b.x += cos * overlap * 0.5;
+                            b.y += sin * overlap * 0.5;
+                            
+                            const dvx = b.vx - a.vx;
+                            const dvy = b.vy - a.vy;
+                            const impulse = (dvx * cos + dvy * sin) * 0.5;
+                            a.vx += impulse * cos;
+                          a.vy += impulse * sin;
+                            b.vx -= impulse * cos;
+                            b.vy -= impulse * sin;
+                        }
+                    }
+                }
+                
+                if (!moving && gameActive) {
+                    checkWinCondition();
+                    if (gameActive) {
+                        if (turn === 'player') {
+                            turn = 'opponent';
+                            opponentPlay();
+                        } else {
+                            turn = 'player';
+                        }
+                    }
+                }
+                
+                drawTable();
+                if (moving || aiming) {
+                    animationId = requestAnimationFrame(updatePhysics);
+                } else {
+                    animationId = null;
+                }
+            }
+
+            function startAiming(e) {
+                if (!gameActive || turn !== 'player') return;
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches ? e.touches[0] : e;
+                const x = (touch.clientX - rect.left) * (TABLE_WIDTH / rect.width);
+                const y = (touch.clientY - rect.top) * (TABLE_HEIGHT / rect.height);
+                
+                const dx = x - cueBall.x;
+                const dy = y - cueBall.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 45 && cueBall.active) {
+                    aiming = true;
+                    aimStart = { x, y };
+                    aimEnd = { x, y };
+                    power = 0;
+                    cueStick.visible = true;
+                    powerIndicator.classList.add('visible');
+                }
+            }
+
+            function moveAim(e) {
+                if (!aiming || !gameActive) return;
+                e.preventDefault();
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches ? e.touches[0] : e;
+                const x = (touch.clientX - rect.left) * (TABLE_WIDTH / rect.width);
+                const y = (touch.clientY - rect.top) * (TABLE_HEIGHT / rect.height);
+                aimEnd = { x, y };
+                
+                const dx = aimEnd.x - aimStart.x;
+                const dy = aimEnd.y - aimStart.y;
+                const dist = Math.min(Math.sqrt(dx * dx + dy * dy), 100);
+                power = Math.min(dist / 100, 1);
+                powerFill.style.width = (power * 100) + '%';
+                drawTable();
+            }
+
+            function endAim(e) {
+                if (!aiming || !gameActive) return;
+                aiming = false;
+                cueStick.visible = false;
+                powerIndicator.classList.remove('visible');
+                
+                if (cueBall.active && power > 0.08) {
+                    const dx = aimStart.x - aimEnd.x;
+                    const dy = aimStart.y - aimEnd.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist > 0) {
+                        const force = power * 16;
+                        cueBall.vx = (dx / dist) * force;
+                        cueBall.vy = (dy / dist) * force;
+                    }
+                }
+                
+                power = 0;
+                powerFill.style.width = '0%';
+                if (!animationId) {
+                    animationId = requestAnimationFrame(updatePhysics);
+                }
+            }
+
+            // ربط الأحداث
+            canvas.addEventListener('touchstart', startAiming, { passive: false });
+            canvas.addEventListener('touchmove', moveAim, { passive: false });
+            canvas.addEventListener('touchend', endAim);
+            canvas.addEventListener('mousedown', startAiming);
+            canvas.addEventListener('mousemove', (e) => { if (aiming) moveAim(e); });
+            canvas.addEventListener('mouseup', endAim);
+            canvas.addEventListener('mouseleave', endAim);
+
+            startBtn.addEventListener('click', () => {
+                startScreen.classList.add('hidden');
+                playScreen.classList.remove('hidden');
+                initDimensions();
+                resetGame();
+            });
+
+            playAgainBtn.addEventListener('click', () => {
+                winMessage.classList.add('hidden');
+                resetGame();
+            });
+
+            // ضبط أولي
+            initDimensions();
+            createPockets();
+            createBalls();
+            drawTable();
+        });
+    </script>
+</body>
+</html>
